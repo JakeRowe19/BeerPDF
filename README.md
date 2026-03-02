@@ -1,16 +1,25 @@
-# Beer label generator (Stage 1)
+# Beer labels (Stage 1 + Stage 2)
 
-Generates mono PDF labels (58×60 mm) from a public Google Sheets CSV export.
+## Stage 1
+Generates mono PDF labels (58×60mm) into:
+- `labels/{id}.pdf`
+- `labels/index.json`
 
-## Required columns (others ignored)
-- `id`
-- `название`
-- `Страна` (city)
-- `Тип`
+## Stage 2 (kiosk UI for 1366×768 touch)
+Static UI in `docs/`:
+- 3-column grid
+- no search / filters
+- sorted by numeric `id`
+- tap item -> print modal (iframe) + big Print button
 
-## Optional columns
-- `Крепость%`
-- `Плотность°P`
-- `Горечь IBU` (preferred) or `Горечь` (fallback)
+The workflow copies generated labels to `docs/labels/` for GitHub Pages.
 
-Rows missing required fields are skipped (useful when your CSV has technical/service rows).
+### Enable GitHub Pages
+Settings → Pages:
+- Source: Deploy from a branch
+- Branch: main
+- Folder: /docs
+
+### Secrets
+- SHEETS_CSV_URL (required)
+- STORE_NAME (optional; default: ТЕМНОЕ СВЕТЛОЕ)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate 58x60mm mono PDF labels from a public Google Sheets CSV export.
+Stage 1: Generate 58x60mm mono PDF labels from a public Google Sheets CSV export.
 
 Required columns (others ignored):
 - id
@@ -22,11 +22,8 @@ Robustness:
 - For density, if 'Плотность°P' contains '%' (e.g. '5,2% 16OG'), we keep only the last token ('16OG').
 
 Dynamic layout:
-- The stats row is dynamic: shows only non-empty values.
-  * 3 values -> 3 equal columns
-  * 2 values -> 2 equal columns
-  * 1 value  -> centered
-- If no stats at all (e.g., non-alcoholic), the whole block is vertically re-centered so the label doesn't look empty.
+- Stats row shows only non-empty values (3/2/1 values -> reflow).
+- If no stats (e.g., non-alcoholic), the whole label content is vertically centered.
 """
 from __future__ import annotations
 
@@ -68,21 +65,17 @@ FS_STORE = 12
 
 STORE_DEFAULT = "ТЕМНОЕ СВЕТЛОЕ"
 
-
 def die(msg: str, code: int = 2) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     raise SystemExit(code)
 
-
 def warn(msg: str) -> None:
     print(f"WARNING: {msg}", file=sys.stderr)
-
 
 def normalize_header(h: str) -> str:
     h2 = (h or "").strip()
     h2 = re.sub(r"\s+", " ", h2)
     return h2
-
 
 def fetch_csv(url: str) -> str:
     req = Request(url, headers={"User-Agent": "github-actions/beer-labels/1.0"})
@@ -93,7 +86,6 @@ def fetch_csv(url: str) -> str:
     except UnicodeDecodeError:
         return data.decode("utf-8")
 
-
 def safe_id_to_filename(id_value: str) -> str:
     s = str(id_value).strip()
     if not s:
@@ -101,24 +93,20 @@ def safe_id_to_filename(id_value: str) -> str:
     s = re.sub(r"[^\w\-]+", "_", s, flags=re.UNICODE)
     return f"{s}.pdf"
 
-
 def register_fonts() -> None:
     if not Path(FONT_REG).exists() or not Path(FONT_BOLD).exists():
         die("DejaVuSans fonts not found. Install fonts-dejavu-core.")
     pdfmetrics.registerFont(TTFont("DejaVu", FONT_REG))
     pdfmetrics.registerFont(TTFont("DejaVu-Bold", FONT_BOLD))
 
-
 def text_width(text: str, font_name: str, font_size: float) -> float:
     return pdfmetrics.stringWidth(text, font_name, font_size)
-
 
 def fit_font_size_single_line(text: str, font_name: str, max_size: int, min_size: int, max_width: float) -> int:
     size = max_size
     while size > min_size and text_width(text, font_name, size) > max_width:
         size -= 1
     return size
-
 
 def is_bad_value(val: str) -> bool:
     v = (val or "").strip()
@@ -135,16 +123,13 @@ def is_bad_value(val: str) -> bool:
         return True
     return False
 
-
 def clean_density(density_p: str, density_raw: str) -> str:
     dp = (density_p or "").strip()
     dr = (density_raw or "").strip()
+    if is_bad_value(dp): dp = ""
+    if is_bad_value(dr): dr = ""
 
-    if is_bad_value(dp):
-        dp = ""
-    if is_bad_value(dr):
-        dr = ""
-
+    # If dp includes ABV too (has %), keep only last token, e.g. "16OG", "-OG"
     if dp and "%" in dp:
         parts = [p for p in re.split(r"\s+", dp) if p]
         last = parts[-1] if parts else ""
@@ -157,9 +142,7 @@ def clean_density(density_p: str, density_raw: str) -> str:
         if "°" in dr or "OG" in dr.upper():
             return dr
         return f"{dr}°P"
-
     return ""
-
 
 @dataclass
 class Item:
@@ -171,13 +154,11 @@ class Item:
     density: str
     ibu: str
 
-
 def parse_items(csv_text: str) -> List[Item]:
     f = io.StringIO(csv_text)
     reader = csv.DictReader(f)
     if reader.fieldnames is None:
         die("CSV has no header row.")
-
     header_map: Dict[str, str] = {normalize_header(h): h for h in reader.fieldnames}
 
     for req in ["id", "название", "Страна", "Тип"]:
@@ -191,7 +172,6 @@ def parse_items(csv_text: str) -> List[Item]:
 
     items: List[Item] = []
     skipped = 0
-
     for row in reader:
         if not any((v or "").strip() for v in row.values()):
             continue
@@ -213,24 +193,13 @@ def parse_items(csv_text: str) -> List[Item]:
         ibu = get(row, "Горечь IBU") or get(row, "Горечь")
         ibu = "" if is_bad_value(ibu) else ibu
 
-        items.append(Item(
-            id=item_id,
-            name=name,
-            city=city,
-            beer_type=beer_type,
-            abv=abv,
-            density=density,
-            ibu=ibu,
-        ))
+        items.append(Item(item_id, name, city, beer_type, abv, density, ibu))
 
     if not items:
         die("No valid product rows found.")
-
     if skipped:
         warn(f"Skipped {skipped} non-product/service row(s).")
-
     return items
-
 
 def clear_labels_dir() -> None:
     LABELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -238,14 +207,11 @@ def clear_labels_dir() -> None:
         if p.is_file() and (p.suffix.lower() == ".pdf" or p.name == "index.json"):
             p.unlink()
 
-
 def line_height(font_size: float) -> float:
     return font_size * 1.25
 
-
 def draw_label(c: canvas.Canvas, item: Item, store_name: str) -> None:
     c.setFillGray(0)
-
     max_w = PAGE_W - 2 * MARGIN_X
     fs_name = fit_font_size_single_line(item.name, "DejaVu-Bold", FS_NAME_MAX, FS_NAME_MIN, max_w)
 
@@ -303,7 +269,6 @@ def draw_label(c: canvas.Canvas, item: Item, store_name: str) -> None:
     c.setFont("DejaVu-Bold", FS_STORE)
     c.drawCentredString(PAGE_W / 2, y, store_name.upper())
 
-
 def generate_pdfs(items: List[Item], store_name: str) -> None:
     clear_labels_dir()
     index = []
@@ -314,29 +279,19 @@ def generate_pdfs(items: List[Item], store_name: str) -> None:
         draw_label(c, item, store_name=store_name)
         c.showPage()
         c.save()
-        index.append({
-            "id": item.id,
-            "name": item.name,
-            "city": item.city,
-            "type": item.beer_type,
-            "pdf": f"labels/{filename}",
-        })
+        index.append({"id": item.id, "name": item.name, "city": item.city, "type": item.beer_type, "pdf": f"labels/{filename}"})
 
     (LABELS_DIR / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Generated {len(items)} labels into {LABELS_DIR}")
-
 
 def main() -> None:
     url = os.environ.get("SHEETS_CSV_URL", "").strip()
     if not url:
         die("SHEETS_CSV_URL env var is required (public CSV export URL).")
     store_name = (os.environ.get("STORE_NAME") or STORE_DEFAULT).strip() or STORE_DEFAULT
-
     register_fonts()
-    csv_text = fetch_csv(url)
-    items = parse_items(csv_text)
-    generate_pdfs(items, store_name=store_name)
-
+    items = parse_items(fetch_csv(url))
+    generate_pdfs(items, store_name)
 
 if __name__ == "__main__":
     main()

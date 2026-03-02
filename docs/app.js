@@ -2,6 +2,7 @@
   const statusEl = document.getElementById('status');
   const gridEl = document.getElementById('grid');
   const refreshEl = document.getElementById('refresh');
+  const updatedAtEl = document.getElementById('updatedAt');
 
   const modal = document.getElementById('modal');
   const backdrop = document.getElementById('modalBackdrop');
@@ -15,6 +16,13 @@
   let currentPdfUrl = '';
 
   const cacheBuster = () => `v=${Date.now()}`;
+
+  async function loadMeta() {
+    const url = `./labels/meta.json?${cacheBuster()}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return null;
+    try { return await res.json(); } catch { return null; }
+  }
 
   async function loadIndex() {
     const url = `./labels/index.json?${cacheBuster()}`;
@@ -124,6 +132,11 @@
     try {
       statusEl.textContent = 'Загрузка…';
       gridEl.innerHTML = '';
+      const meta = await loadMeta();
+      if (updatedAtEl) {
+        const ts = meta && meta.generated_at ? String(meta.generated_at) : "";
+        updatedAtEl.textContent = ts ? ts.replace("T"," ").replace("Z"," UTC") : "—";
+      }
       all = await loadIndex();
       render(all);
       statusEl.textContent = `Всего позиций: ${all.length}`;

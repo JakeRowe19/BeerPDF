@@ -2,23 +2,18 @@
 """
 Generate 58x60mm mono PDF labels from a public Google Sheets CSV export.
 
-Primary CSV headers (surrounding spaces are ignored):
-- id
-- название
-- Страна              (actually city)
-- Тип
-- Крепость%
-- Плотность°P
-- Горечь
+We ONLY use these logical fields (everything else is ignored):
+- id            -> required
+- название      -> required
+- Страна        -> required (city)
+- Тип           -> required
+- Крепость%     -> optional (may be empty)
+- Плотность°P   -> optional (may be empty)
+- Горечь IBU    -> optional (may be empty)
+  fallback: Горечь (if present; will be rendered as-is)
 
-The script is tolerant to extra columns and "service" rows.
-If a row lacks required fields (id, name, city, type) it is skipped.
-
-Optional fallback headers (if primary is empty/missing):
-- name:     Наименование
-- type:     beertype
-- abv:      крепость
-- density:  плотность
+The CSV may contain many technical/service columns and even blank headers.
+Rows missing required fields (id/название/Страна/Тип) are skipped (not an error).
 """
 from __future__ import annotations
 
@@ -77,6 +72,7 @@ def warn(msg: str) -> None:
 
 
 def normalize_header(h: str) -> str:
+    # strip surrounding whitespace; collapse internal spaces
     h2 = (h or "").strip()
     h2 = re.sub(r"\s+", " ", h2)
     return h2
@@ -86,6 +82,7 @@ def fetch_csv(url: str) -> str:
     req = Request(url, headers={"User-Agent": "github-actions/beer-labels/1.0"})
     with urlopen(req) as resp:
         data = resp.read()
+    # handle possible UTF-8 BOM
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -140,35 +137,34 @@ def parse_items(csv_text: str) -> List[Item]:
     if "id" not in header_map:
         die(f"Missing required column: 'id'. Found headers: {list(header_map.keys())}")
 
-    def get_from_row(row: Dict[str, str], candidates: List[str]) -> str:
-        for cand in candidates:
-            if cand in header_map:
-                raw_key = header_map[cand]
-                val = (row.get(raw_key) or "").strip()
-                if val:
-                    return val
-        return ""
+    def get(row: Dict[str, str], header: str) -> str:
+        if header not in header_map:
+            return ""
+        return (row.get(header_map[header]) or "").strip()
 
     items: List[Item] = []
     skipped = 0
 
     for row in reader:
+        # Skip completely empty rows
         if not any((v or "").strip() for v in row.values()):
             continue
 
-        item_id = get_from_row(row, ["id"])
-        name = get_from_row(row, ["название", "Наименование"])
-        city = get_from_row(row, ["Страна"])
-        beer_type = get_from_row(row, ["Тип", "beertype"])
+        item_id = get(row, "id")
+        name = get(row, "название")
+        city = get(row, "Страна")
+        beer_type = get(row, "Тип")
 
-        abv = get_from_row(row, ["Крепость%", "крепость"])
-        density = get_from_row(row, ["Плотность°P", "плотность"])
-        ibu = get_from_row(row, ["Горечь"])
-
-        # Skip service rows that are not products
+        # Required fields: if missing -> skip (service/technical rows)
         if not (item_id and name and city and beer_type):
             skipped += 1
             continue
+
+        abv = get(row, "Крепость%")
+        density = get(row, "Плотность°P")
+
+        # Bitterness: prefer "Горечь IBU", else "Горечь"
+        ibu = get(row, "Горечь IBU") or get(row, "Горечь")
 
         items.append(Item(
             id=item_id,
@@ -181,7 +177,7 @@ def parse_items(csv_text: str) -> List[Item]:
         ))
 
     if not items:
-        die("No valid product rows found (all rows were empty or missing id/name/city/type).")
+        die("No valid product rows found (all rows were empty or missing id/название/Страна/Тип).")
 
     if skipped:
         warn(f"Skipped {skipped} non-product/service row(s) that lacked required fields.")
@@ -202,24 +198,29 @@ def draw_label(c: canvas.Canvas, item: Item, store_name: str) -> None:
 
     c.setFillGray(0)
 
+    # ID
     c.setFont("DejaVu", FS_ID)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_ID), item.id)
 
+    # Name (auto-fit)
     max_w = PAGE_W - 2 * MARGIN_X
     fs_name = fit_font_size_single_line(item.name, "DejaVu-Bold", FS_NAME_MAX, FS_NAME_MIN, max_w)
     c.setFont("DejaVu-Bold", fs_name)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_NAME), item.name)
 
+    # City / Type
     c.setFont("DejaVu", FS_CITY_TYPE)
     c.drawString(MARGIN_X, y_from_top(Y_CITY_TYPE), item.city)
     c.drawRightString(PAGE_W - MARGIN_X, y_from_top(Y_CITY_TYPE), item.beer_type)
 
+    # Stats (3 columns)
     c.setFont("DejaVu", FS_STATS)
     col_centers = [PAGE_W * (1/6), PAGE_W * (3/6), PAGE_W * (5/6)]
     for x, val in zip(col_centers, [item.abv, item.density, item.ibu]):
         if val:
             c.drawCentredString(x, y_from_top(Y_STATS), val)
 
+    # Store
     c.setFont("DejaVu-Bold", FS_STORE)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_STORE), store_name.upper())
 

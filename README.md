@@ -2,7 +2,7 @@
 
 This repo generates **mono PDF labels** (58×60 mm) from a public Google Sheets CSV export.
 
-## CSV columns (must exist)
+## Primary CSV columns
 
 - `id`
 - `название`
@@ -14,25 +14,17 @@ This repo generates **mono PDF labels** (58×60 mm) from a public Google Sheets 
 
 Only `Крепость%`, `Плотность°P`, `Горечь` may be empty.
 
+### Notes
+- Extra columns are allowed.
+- Rows missing required fields (`id`, `название`/`Наименование`, `Страна`, `Тип`/`beertype`) are skipped.
+
 ## Output
 
-- `labels/{id}.pdf` — one label per product
-- `labels/index.json` — metadata list
+- `labels/{id}.pdf`
+- `labels/index.json`
 
 ## Setup
 
-1. Publish your Google Sheet as CSV (public URL).
-2. In GitHub repo settings → **Secrets and variables** → **Actions** → create secrets:
-   - `SHEETS_CSV_URL` = your CSV export URL
-   - (optional) `STORE_NAME` = override store name (default: `ТЕМНОЕ СВЕТЛОЕ`)
-
-3. The workflow runs hourly (and can be run manually).
-
-## Local run
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-export SHEETS_CSV_URL="https://docs.google.com/spreadsheets/d/.../export?format=csv"
-python scripts/generate_labels.py
-```
+Create GitHub Actions secrets:
+- `SHEETS_CSV_URL` (required)
+- `STORE_NAME` (optional; default: `ТЕМНОЕ СВЕТЛОЕ`)

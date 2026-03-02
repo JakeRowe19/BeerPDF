@@ -2,18 +2,15 @@
 """
 Generate 58x60mm mono PDF labels from a public Google Sheets CSV export.
 
-We ONLY use these logical fields (everything else is ignored):
-- id            -> required
-- название      -> required
-- Страна        -> required (city)
-- Тип           -> required
-- Крепость%     -> optional (may be empty)
-- Плотность°P   -> optional (may be empty)
-- Горечь IBU    -> optional (may be empty)
-  fallback: Горечь (if present; will be rendered as-is)
+Uses ONLY these columns (others ignored):
+Required: id, название, Страна (city), Тип
+Optional: Крепость%, Плотность°P, плотность, Горечь IBU, Горечь
 
-The CSV may contain many technical/service columns and even blank headers.
-Rows missing required fields (id/название/Страна/Тип) are skipped (not an error).
+Fix for your sheet:
+- Some rows have Плотность°P like '5,2% 16OG' (ABV duplicated). If '%' exists, we keep only the LAST token ('16OG').
+- If Плотность°P is empty/unusable, we fallback to 'плотность' and print '{плотность}°P'.
+
+Rows missing required fields are skipped.
 """
 from __future__ import annotations
 
@@ -42,10 +39,9 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 PAGE_W = 58 * mm
 PAGE_H = 60 * mm
-
 MARGIN_X = 2.2 * mm
 
-# Layout Y positions (from top, in mm)
+# Y positions from top (mm)
 Y_ID = 4.5 * mm
 Y_NAME = 13.5 * mm
 Y_CITY_TYPE = 22.5 * mm
@@ -72,7 +68,6 @@ def warn(msg: str) -> None:
 
 
 def normalize_header(h: str) -> str:
-    # strip surrounding whitespace; collapse internal spaces
     h2 = (h or "").strip()
     h2 = re.sub(r"\s+", " ", h2)
     return h2
@@ -82,7 +77,6 @@ def fetch_csv(url: str) -> str:
     req = Request(url, headers={"User-Agent": "github-actions/beer-labels/1.0"})
     with urlopen(req) as resp:
         data = resp.read()
-    # handle possible UTF-8 BOM
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -99,7 +93,7 @@ def safe_id_to_filename(id_value: str) -> str:
 
 def register_fonts() -> None:
     if not Path(FONT_REG).exists() or not Path(FONT_BOLD).exists():
-        die("DejaVuSans fonts not found on this runner. Install fonts-dejavu-core.")
+        die("DejaVuSans fonts not found. Install fonts-dejavu-core.")
     pdfmetrics.registerFont(TTFont("DejaVu", FONT_REG))
     pdfmetrics.registerFont(TTFont("DejaVu-Bold", FONT_BOLD))
 
@@ -113,6 +107,23 @@ def fit_font_size_single_line(text: str, font_name: str, max_size: int, min_size
     while size > min_size and text_width(text, font_name, size) > max_width:
         size -= 1
     return size
+
+
+def clean_density(density_p: str, density_raw: str) -> str:
+    dp = (density_p or "").strip()
+    dr = (density_raw or "").strip()
+
+    if dp and "%" in dp:
+        parts = [p for p in re.split(r"\s+", dp) if p]
+        return parts[-1] if parts else ""
+
+    if dp:
+        return dp
+
+    if dr:
+        return f"{dr}°P"
+
+    return ""
 
 
 @dataclass
@@ -134,8 +145,9 @@ def parse_items(csv_text: str) -> List[Item]:
 
     header_map: Dict[str, str] = {normalize_header(h): h for h in reader.fieldnames}
 
-    if "id" not in header_map:
-        die(f"Missing required column: 'id'. Found headers: {list(header_map.keys())}")
+    for req in ["id", "название", "Страна", "Тип"]:
+        if req not in header_map:
+            die(f"Missing required column: '{req}'. Found headers: {list(header_map.keys())}")
 
     def get(row: Dict[str, str], header: str) -> str:
         if header not in header_map:
@@ -146,7 +158,6 @@ def parse_items(csv_text: str) -> List[Item]:
     skipped = 0
 
     for row in reader:
-        # Skip completely empty rows
         if not any((v or "").strip() for v in row.values()):
             continue
 
@@ -155,15 +166,12 @@ def parse_items(csv_text: str) -> List[Item]:
         city = get(row, "Страна")
         beer_type = get(row, "Тип")
 
-        # Required fields: if missing -> skip (service/technical rows)
         if not (item_id and name and city and beer_type):
             skipped += 1
             continue
 
         abv = get(row, "Крепость%")
-        density = get(row, "Плотность°P")
-
-        # Bitterness: prefer "Горечь IBU", else "Горечь"
+        density = clean_density(get(row, "Плотность°P"), get(row, "плотность"))
         ibu = get(row, "Горечь IBU") or get(row, "Горечь")
 
         items.append(Item(
@@ -177,10 +185,10 @@ def parse_items(csv_text: str) -> List[Item]:
         ))
 
     if not items:
-        die("No valid product rows found (all rows were empty or missing id/название/Страна/Тип).")
+        die("No valid product rows found.")
 
     if skipped:
-        warn(f"Skipped {skipped} non-product/service row(s) that lacked required fields.")
+        warn(f"Skipped {skipped} non-product/service row(s).")
 
     return items
 
@@ -198,29 +206,24 @@ def draw_label(c: canvas.Canvas, item: Item, store_name: str) -> None:
 
     c.setFillGray(0)
 
-    # ID
     c.setFont("DejaVu", FS_ID)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_ID), item.id)
 
-    # Name (auto-fit)
     max_w = PAGE_W - 2 * MARGIN_X
     fs_name = fit_font_size_single_line(item.name, "DejaVu-Bold", FS_NAME_MAX, FS_NAME_MIN, max_w)
     c.setFont("DejaVu-Bold", fs_name)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_NAME), item.name)
 
-    # City / Type
     c.setFont("DejaVu", FS_CITY_TYPE)
     c.drawString(MARGIN_X, y_from_top(Y_CITY_TYPE), item.city)
     c.drawRightString(PAGE_W - MARGIN_X, y_from_top(Y_CITY_TYPE), item.beer_type)
 
-    # Stats (3 columns)
     c.setFont("DejaVu", FS_STATS)
     col_centers = [PAGE_W * (1/6), PAGE_W * (3/6), PAGE_W * (5/6)]
     for x, val in zip(col_centers, [item.abv, item.density, item.ibu]):
         if val:
             c.drawCentredString(x, y_from_top(Y_STATS), val)
 
-    # Store
     c.setFont("DejaVu-Bold", FS_STORE)
     c.drawCentredString(PAGE_W / 2, y_from_top(Y_STORE), store_name.upper())
 
@@ -235,7 +238,6 @@ def generate_pdfs(items: List[Item], store_name: str) -> None:
         draw_label(c, item, store_name=store_name)
         c.showPage()
         c.save()
-
         index.append({
             "id": item.id,
             "name": item.name,
@@ -255,7 +257,6 @@ def main() -> None:
     url = os.environ.get("SHEETS_CSV_URL", "").strip()
     if not url:
         die("SHEETS_CSV_URL env var is required (public CSV export URL).")
-
     store_name = (os.environ.get("STORE_NAME") or STORE_DEFAULT).strip() or STORE_DEFAULT
 
     register_fonts()

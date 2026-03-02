@@ -135,7 +135,7 @@
       const meta = await loadMeta();
       if (updatedAtEl) {
         const ts = meta && meta.generated_at ? String(meta.generated_at) : "";
-        updatedAtEl.textContent = ts ? ts.replace("T"," ").replace("Z"," UTC") : "—";
+        if (meta && meta.generated_at) { const raw = String(meta.generated_at).replace("T"," "); const tz = meta.timezone ? " ("+meta.timezone+")" : ""; updatedAtEl.textContent = raw + tz; } else { updatedAtEl.textContent = "—"; }
       }
       all = await loadIndex();
       render(all);

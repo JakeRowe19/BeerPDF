@@ -23,3 +23,7 @@ Settings → Pages:
 ### Secrets
 - SHEETS_CSV_URL (required)
 - STORE_NAME (optional; default: ТЕМНОЕ СВЕТЛОЕ)
+
+
+### Last updated
+Generator writes `labels/meta.json` with UTC timestamp. UI shows it in header.

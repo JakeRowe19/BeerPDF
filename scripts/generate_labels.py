@@ -282,7 +282,7 @@ def generate_pdfs(items: List[Item], store_name: str) -> None:
         index.append({"id": item.id, "name": item.name, "city": item.city, "type": item.beer_type, "pdf": f"labels/{filename}"})
 
     (LABELS_DIR / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-    (LABELS_DIR / "meta.json").write_text(json.dumps({"generated_at": __import__("datetime").datetime.utcnow().replace(microsecond=0).isoformat()+"Z"}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (LABELS_DIR / "meta.json").write_text(json.dumps({"generated_at": (__import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(hours=3)).replace(microsecond=0).isoformat(), "timezone": "GMT+3 (Moscow)"}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Generated {len(items)} labels into {LABELS_DIR}")
 
 def main() -> None:

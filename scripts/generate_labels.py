@@ -2,15 +2,31 @@
 """
 Generate 58x60mm mono PDF labels from a public Google Sheets CSV export.
 
-Uses ONLY these columns (others ignored):
-Required: id, название, Страна (city), Тип
-Optional: Крепость%, Плотность°P, плотность, Горечь IBU, Горечь
+Required columns (others ignored):
+- id
+- название
+- Страна (city)
+- Тип
 
-Fix for your sheet:
-- Some rows have Плотность°P like '5,2% 16OG' (ABV duplicated). If '%' exists, we keep only the LAST token ('16OG').
-- If Плотность°P is empty/unusable, we fallback to 'плотность' and print '{плотность}°P'.
+Optional columns:
+- Крепость%
+- Плотность°P
+- плотность (fallback for density)
+- Горечь IBU (preferred)
+- Горечь (fallback)
 
-Rows missing required fields are skipped.
+Robustness:
+- Technical/service columns are ignored.
+- Rows missing required fields are skipped.
+- Broken formula outputs like '#VALUE!' are treated as empty.
+- For density, if 'Плотность°P' contains '%' (e.g. '5,2% 16OG'), we keep only the last token ('16OG').
+
+Dynamic layout:
+- The stats row is dynamic: shows only non-empty values.
+  * 3 values -> 3 equal columns
+  * 2 values -> 2 equal columns
+  * 1 value  -> centered
+- If no stats at all (e.g., non-alcoholic), the whole block is vertically re-centered so the label doesn't look empty.
 """
 from __future__ import annotations
 
@@ -30,7 +46,6 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LABELS_DIR = ROOT / "labels"
 
@@ -39,14 +54,10 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 PAGE_W = 58 * mm
 PAGE_H = 60 * mm
-MARGIN_X = 2.2 * mm
 
-# Y positions from top (mm)
-Y_ID = 4.5 * mm
-Y_NAME = 13.5 * mm
-Y_CITY_TYPE = 22.5 * mm
-Y_STATS = 34.0 * mm
-Y_STORE = 55.5 * mm
+MARGIN_X = 2.2 * mm
+MARGIN_TOP = 3.0 * mm
+MARGIN_BOTTOM = 3.0 * mm
 
 FS_ID = 9
 FS_NAME_MAX = 18
@@ -109,18 +120,42 @@ def fit_font_size_single_line(text: str, font_name: str, max_size: int, min_size
     return size
 
 
+def is_bad_value(val: str) -> bool:
+    v = (val or "").strip()
+    if not v:
+        return True
+    v_up = v.upper()
+    if "#VALUE" in v_up:
+        return True
+    if v in {"-", "—", "–"}:
+        return True
+    if v_up in {"0", "0%", "0%OG", "0% OG"}:
+        return True
+    if v_up.replace(" ", "") == "IBU":
+        return True
+    return False
+
+
 def clean_density(density_p: str, density_raw: str) -> str:
     dp = (density_p or "").strip()
     dr = (density_raw or "").strip()
 
+    if is_bad_value(dp):
+        dp = ""
+    if is_bad_value(dr):
+        dr = ""
+
     if dp and "%" in dp:
         parts = [p for p in re.split(r"\s+", dp) if p]
-        return parts[-1] if parts else ""
+        last = parts[-1] if parts else ""
+        return "" if is_bad_value(last) else last
 
     if dp:
         return dp
 
     if dr:
+        if "°" in dr or "OG" in dr.upper():
+            return dr
         return f"{dr}°P"
 
     return ""
@@ -171,8 +206,12 @@ def parse_items(csv_text: str) -> List[Item]:
             continue
 
         abv = get(row, "Крепость%")
+        abv = "" if is_bad_value(abv) else abv
+
         density = clean_density(get(row, "Плотность°P"), get(row, "плотность"))
+
         ibu = get(row, "Горечь IBU") or get(row, "Горечь")
+        ibu = "" if is_bad_value(ibu) else ibu
 
         items.append(Item(
             id=item_id,
@@ -200,32 +239,69 @@ def clear_labels_dir() -> None:
             p.unlink()
 
 
+def line_height(font_size: float) -> float:
+    return font_size * 1.25
+
+
 def draw_label(c: canvas.Canvas, item: Item, store_name: str) -> None:
-    def y_from_top(mm_from_top: float) -> float:
-        return PAGE_H - mm_from_top
-
     c.setFillGray(0)
-
-    c.setFont("DejaVu", FS_ID)
-    c.drawCentredString(PAGE_W / 2, y_from_top(Y_ID), item.id)
 
     max_w = PAGE_W - 2 * MARGIN_X
     fs_name = fit_font_size_single_line(item.name, "DejaVu-Bold", FS_NAME_MAX, FS_NAME_MIN, max_w)
+
+    stats_vals = [v for v in [item.abv, item.density, item.ibu] if (v or "").strip()]
+    have_stats = len(stats_vals) > 0
+
+    gaps = {
+        "id_name": 2.8 * mm,
+        "name_city": 2.6 * mm,
+        "city_stats": (3.2 * mm) if have_stats else (2.0 * mm),
+        "stats_store": (5.5 * mm) if have_stats else (2.5 * mm),
+    }
+
+    h_id = line_height(FS_ID)
+    h_name = line_height(fs_name)
+    h_city = line_height(FS_CITY_TYPE)
+    h_stats = line_height(FS_STATS) if have_stats else 0
+    h_store = line_height(FS_STORE)
+
+    total_h = h_id + gaps["id_name"] + h_name + gaps["name_city"] + h_city + gaps["city_stats"] + h_stats + gaps["stats_store"] + h_store
+    usable_h = PAGE_H - MARGIN_TOP - MARGIN_BOTTOM
+    top_offset = MARGIN_TOP + max(0, (usable_h - total_h) / 2)
+
+    y = PAGE_H - top_offset
+
+    c.setFont("DejaVu", FS_ID)
+    c.drawCentredString(PAGE_W / 2, y, item.id)
+    y -= h_id + gaps["id_name"]
+
     c.setFont("DejaVu-Bold", fs_name)
-    c.drawCentredString(PAGE_W / 2, y_from_top(Y_NAME), item.name)
+    c.drawCentredString(PAGE_W / 2, y, item.name)
+    y -= h_name + gaps["name_city"]
 
     c.setFont("DejaVu", FS_CITY_TYPE)
-    c.drawString(MARGIN_X, y_from_top(Y_CITY_TYPE), item.city)
-    c.drawRightString(PAGE_W - MARGIN_X, y_from_top(Y_CITY_TYPE), item.beer_type)
+    c.drawString(MARGIN_X, y, item.city)
+    c.drawRightString(PAGE_W - MARGIN_X, y, item.beer_type)
+    y -= h_city + gaps["city_stats"]
 
-    c.setFont("DejaVu", FS_STATS)
-    col_centers = [PAGE_W * (1/6), PAGE_W * (3/6), PAGE_W * (5/6)]
-    for x, val in zip(col_centers, [item.abv, item.density, item.ibu]):
-        if val:
-            c.drawCentredString(x, y_from_top(Y_STATS), val)
+    if have_stats:
+        c.setFont("DejaVu", FS_STATS)
+        n = len(stats_vals)
+        if n == 1:
+            xs = [PAGE_W / 2]
+        elif n == 2:
+            xs = [PAGE_W * 0.25, PAGE_W * 0.75]
+        else:
+            xs = [PAGE_W * (1/6), PAGE_W * (3/6), PAGE_W * (5/6)]
+            stats_vals = stats_vals[:3]
+        for x, val in zip(xs, stats_vals):
+            c.drawCentredString(x, y, val)
+        y -= h_stats + gaps["stats_store"]
+    else:
+        y -= gaps["stats_store"]
 
     c.setFont("DejaVu-Bold", FS_STORE)
-    c.drawCentredString(PAGE_W / 2, y_from_top(Y_STORE), store_name.upper())
+    c.drawCentredString(PAGE_W / 2, y, store_name.upper())
 
 
 def generate_pdfs(items: List[Item], store_name: str) -> None:
@@ -246,10 +322,7 @@ def generate_pdfs(items: List[Item], store_name: str) -> None:
             "pdf": f"labels/{filename}",
         })
 
-    (LABELS_DIR / "index.json").write_text(
-        json.dumps(index, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    (LABELS_DIR / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Generated {len(items)} labels into {LABELS_DIR}")
 
 
